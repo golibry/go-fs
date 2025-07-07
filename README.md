@@ -1,6 +1,7 @@
 # go-fs
 
-Golang file system common functionalities
+Golang file system common functionalities.  
+Migrated from https://github.com/rsgcata/go-fs
 
 ## Installation
 
