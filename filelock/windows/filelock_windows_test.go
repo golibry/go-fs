@@ -1,13 +1,14 @@
 package windows
 
 import (
-	"github.com/golibry/go-fs/filelock"
-	"github.com/golibry/go-fs/filelock/unix"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golibry/go-fs/filelock"
 
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -28,13 +29,13 @@ func (s *FileLockTestSuite) SetupTest() {
 
 // TearDownTest removes the temporary directory after each test
 func (s *FileLockTestSuite) TearDownTest() {
-	os.RemoveAll(s.tempDir)
+	_ = os.RemoveAll(s.tempDir)
 }
 
 // TestBasicLockAndUnlock tests the basic lock and unlock functionality
 func (s *FileLockTestSuite) TestBasicLockAndUnlock() {
 	lockPath := filepath.Join(s.tempDir, "basic.lock")
-	lock := unix.New(lockPath)
+	lock := New(lockPath)
 
 	// Lock the file
 	err := lock.Lock()
@@ -50,7 +51,7 @@ func (s *FileLockTestSuite) TestBasicLockAndUnlock() {
 // TestDoubleLock tests that locking an already locked file returns an error
 func (s *FileLockTestSuite) TestDoubleLock() {
 	lockPath := filepath.Join(s.tempDir, "double.lock")
-	lock := unix.New(lockPath)
+	lock := New(lockPath)
 
 	// Lock the file
 	err := lock.Lock()
@@ -70,7 +71,7 @@ func (s *FileLockTestSuite) TestDoubleLock() {
 // TestUnlockWithoutLock tests that unlocking a file that isn't locked returns an error
 func (s *FileLockTestSuite) TestUnlockWithoutLock() {
 	lockPath := filepath.Join(s.tempDir, "unlock.lock")
-	lock := unix.New(lockPath)
+	lock := New(lockPath)
 
 	// Try to unlock without locking first
 	err := lock.Unlock()
@@ -82,12 +83,12 @@ func (s *FileLockTestSuite) TestConcurrentLocks() {
 	lockPath := filepath.Join(s.tempDir, "concurrent.lock")
 
 	// Create a lock and acquire it
-	lock1 := unix.New(lockPath)
+	lock1 := New(lockPath)
 	err := lock1.Lock()
 	s.Require().NoError(err)
 
 	// Try to acquire the same lock from another instance (should fail with ErrLockHeld)
-	lock2 := unix.New(lockPath)
+	lock2 := New(lockPath)
 	err = lock2.Lock()
 	s.Assert().Equal(filelock.ErrLockHeld, err)
 
@@ -109,12 +110,12 @@ func (s *FileLockTestSuite) TestLockWithTimeout() {
 	lockPath := filepath.Join(s.tempDir, "timeout.lock")
 
 	// Create a lock and acquire it
-	lock1 := unix.New(lockPath)
+	lock1 := New(lockPath)
 	err := lock1.Lock()
 	s.Require().NoError(err)
 
 	// Try to acquire with a short timeout (should fail with ErrTimeout)
-	lock2 := unix.New(lockPath)
+	lock2 := New(lockPath)
 	err = lock2.LockWithTimeout(100 * time.Millisecond)
 	s.Assert().Equal(filelock.ErrTimeout, err)
 
@@ -128,21 +129,23 @@ func (s *FileLockTestSuite) TestNonBlockingBehavior() {
 	lockPath := filepath.Join(s.tempDir, "nonblocking.lock")
 
 	// Create a lock and acquire it
-	lock1 := unix.New(lockPath)
+	lock1 := New(lockPath)
 	err := lock1.Lock()
 	s.Require().NoError(err)
-	defer lock1.Unlock()
+	defer func(lock1 *FileLock) {
+		_ = lock1.Unlock()
+	}(lock1)
 
 	// Create a channel to signal when the goroutine has completed
 	done := make(chan struct{})
 
 	// Start a goroutine that tries to acquire the lock with a long timeout
 	go func() {
-		lock2 := unix.New(lockPath)
+		lock2 := New(lockPath)
 		// Use a relatively long timeout
 		err := lock2.LockWithTimeout(500 * time.Millisecond)
 		// We expect a timeout error
-		if err != filelock.ErrTimeout {
+		if !errors.Is(err, filelock.ErrTimeout) {
 			s.T().Errorf("Expected ErrTimeout, got: %v", err)
 		}
 		// Signal that the goroutine has completed
@@ -162,7 +165,7 @@ func (s *FileLockTestSuite) TestNonBlockingBehavior() {
 // TestThreadSafety tests that the FileLock is thread-safe
 func (s *FileLockTestSuite) TestThreadSafety() {
 	lockPath := filepath.Join(s.tempDir, "threadsafe.lock")
-	lock := unix.New(lockPath)
+	lock := New(lockPath)
 
 	// Create multiple goroutines that try to lock and unlock
 	var wg sync.WaitGroup
@@ -178,7 +181,10 @@ func (s *FileLockTestSuite) TestThreadSafety() {
 
 			// Try to lock
 			err := lock.Lock()
-			if err != nil && err != filelock.ErrAlreadyLocked && err != filelock.ErrLockHeld {
+			if err != nil && !errors.Is(err, filelock.ErrAlreadyLocked) && !errors.Is(
+				err,
+				filelock.ErrLockHeld,
+			) {
 				errChan <- err
 				return
 			}

@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
-	"github.com/golibry/go-fs"
 	"os"
 	"path"
+
+	"github.com/golibry/go-fs"
 )
 
 func main() {

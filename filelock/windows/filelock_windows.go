@@ -3,10 +3,11 @@
 package windows
 
 import (
-	"github.com/golibry/go-fs/filelock"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/golibry/go-fs/filelock"
 
 	"golang.org/x/sys/windows"
 )
