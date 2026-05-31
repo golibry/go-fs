@@ -3,6 +3,7 @@
 package filelock
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -25,12 +26,17 @@ var (
 // FileLock defines a common interface for file locking mechanisms.
 type FileLock interface {
 	// Lock attempts to acquire an exclusive lock on the file.
+	// Lock attempts to acquire an exclusive lock on the file without waiting.
 	// Returns ErrLockHeld if the lock is already held by another process.
 	Lock() error
 
 	// LockWithTimeout attempts to acquire an exclusive lock on the file with a timeout.
 	// If timeout is <= 0, it's a non-blocking operation.
 	LockWithTimeout(timeout time.Duration) error
+
+	// LockContext attempts to acquire an exclusive lock until ctx is canceled.
+	// Returns ctx.Err() when the context is canceled before the lock is acquired.
+	LockContext(ctx context.Context) error
 
 	// Unlock releases the lock on the file.
 	// Returns ErrNotLocked if the file is not locked.

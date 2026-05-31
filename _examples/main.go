@@ -16,7 +16,7 @@ func main() {
 	fmt.Println(err) // should be nil
 
 	err = test.Lock()
-	fmt.Println(err)             // should be ErrLockHeld
+	fmt.Println(err)             // should be ErrAlreadyLocked
 	fmt.Println(test.IsLocked()) // should be true
 
 	_ = test.Unlock()

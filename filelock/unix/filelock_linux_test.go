@@ -1,6 +1,7 @@
 package unix
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -136,6 +137,24 @@ func (s *FileLockTestSuite) TestLockWithTimeout() {
 	// Release the first lock
 	err = lock1.Unlock()
 	s.Require().NoError(err)
+}
+
+func (s *FileLockTestSuite) TestLockContextReturnsContextError() {
+	lockPath := filepath.Join(s.tempDir, "context.lock")
+
+	lock1 := New(lockPath)
+	err := lock1.Lock()
+	s.Require().NoError(err)
+	defer func() {
+		_ = lock1.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	lock2 := New(lockPath)
+	err = lock2.LockContext(ctx)
+	s.Assert().ErrorIs(err, context.DeadlineExceeded)
 }
 
 // TestNonBlockingBehavior tests that LockWithTimeout doesn't block threads indefinitely

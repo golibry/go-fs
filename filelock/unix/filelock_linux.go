@@ -3,6 +3,8 @@
 package unix
 
 import (
+	"context"
+	"errors"
 	"os"
 	"sync"
 	"syscall"
@@ -30,18 +32,47 @@ func New(path string) *FileLock {
 // Lock acquires an exclusive lock on the file
 // If the lock cannot be acquired immediately, it returns ErrLockHeld
 func (fl *FileLock) Lock() error {
-	return fl.LockWithTimeout(0)
+	return fl.lock(context.Background(), false)
 }
 
 // LockWithTimeout attempts to acquire an exclusive lock on the file with a timeout
 // If timeout is <= 0, it's a non-blocking operation
 // If timeout is > 0, it will retry in a non-blocking manner until the timeout is reached
 func (fl *FileLock) LockWithTimeout(timeout time.Duration) error {
+	if timeout <= 0 {
+		return fl.Lock()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	err := fl.LockContext(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return filelock.ErrTimeout
+	}
+
+	return err
+}
+
+// LockContext attempts to acquire an exclusive lock until ctx is canceled.
+func (fl *FileLock) LockContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return fl.lock(ctx, true)
+}
+
+func (fl *FileLock) lock(ctx context.Context, wait bool) error {
 	fl.mutex.Lock()
 	defer fl.mutex.Unlock()
 
 	if fl.locked {
 		return filelock.ErrAlreadyLocked
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	var err error
@@ -51,7 +82,7 @@ func (fl *FileLock) LockWithTimeout(timeout time.Duration) error {
 	}
 
 	// Try to acquire the lock
-	err = fl.tryLock(timeout)
+	err = fl.tryLock(ctx, wait)
 	if err != nil {
 		_ = fl.file.Close()
 		fl.file = nil
@@ -62,9 +93,7 @@ func (fl *FileLock) LockWithTimeout(timeout time.Duration) error {
 	return nil
 }
 
-// tryLock attempts to acquire the lock with the specified timeout
-// It uses a non-blocking approach for all cases
-func (fl *FileLock) tryLock(timeout time.Duration) error {
+func (fl *FileLock) tryLock(ctx context.Context, wait bool) error {
 	// Try non-blocking lock first using syscall.Flock
 	// LOCK_EX = exclusive lock, LOCK_NB = non-blocking
 	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
@@ -76,23 +105,18 @@ func (fl *FileLock) tryLock(timeout time.Duration) error {
 
 	// EWOULDBLOCK means the lock is held by someone else
 	if err == syscall.EWOULDBLOCK {
-		// If timeout <= 0, it's a non-blocking call, so return immediately
-		if timeout <= 0 {
+		if !wait {
 			return filelock.ErrLockHeld
 		}
 
-		// For timeout > 0, retry with polling until timeout
-		startTime := time.Now()
 		retryInterval := time.Millisecond * 10 // Start with 10ms retry interval
 
 		for {
-			// Check if we've exceeded the timeout
-			if time.Since(startTime) >= timeout {
-				return filelock.ErrTimeout
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryInterval):
 			}
-
-			// Sleep for a short interval before retrying
-			time.Sleep(retryInterval)
 
 			// Increase retry interval for exponential backoff, but cap it at 100ms
 			if retryInterval < time.Millisecond*100 {
