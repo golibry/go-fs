@@ -1,10 +1,10 @@
 module github.com/golibry/go-fs
 
-go 1.24.1
+go 1.25.0
 
 require (
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.45.0
 )
 
 require (

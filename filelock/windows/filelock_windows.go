@@ -65,6 +65,24 @@ func (fl *FileLock) LockContext(ctx context.Context) error {
 }
 
 func (fl *FileLock) lock(ctx context.Context, wait bool) error {
+	retryInterval := 10 * time.Millisecond
+	for {
+		err := fl.tryLock(ctx)
+		if err != filelock.ErrLockHeld || !wait {
+			return err
+		}
+
+		// Do not hold the state mutex while waiting between attempts.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryInterval):
+		}
+		retryInterval = min(retryInterval*3/2, 100*time.Millisecond)
+	}
+}
+
+func (fl *FileLock) tryLock(ctx context.Context) error {
 	fl.mutex.Lock()
 	defer fl.mutex.Unlock()
 
@@ -82,24 +100,11 @@ func (fl *FileLock) lock(ctx context.Context, wait bool) error {
 		return err
 	}
 
-	// Try to acquire the lock
-	err = fl.tryLock(ctx, wait)
-	if err != nil {
-		_ = fl.file.Close()
-		fl.file = nil
-		return err
-	}
-
-	fl.locked = true
-	return nil
-}
-
-func (fl *FileLock) tryLock(ctx context.Context, wait bool) error {
 	handle := windows.Handle(fl.file.Fd())
 	overlapped := &windows.Overlapped{}
 
 	// For non-blocking mode or immediate check
-	err := windows.LockFileEx(
+	err = windows.LockFileEx(
 		handle,
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
 		0,
@@ -108,44 +113,17 @@ func (fl *FileLock) tryLock(ctx context.Context, wait bool) error {
 		overlapped,
 	)
 
-	// If we got the lock immediately or there was an error other than lock violation, return
-	if err == nil || err != windows.ERROR_LOCK_VIOLATION {
+	if err != nil {
+		_ = fl.file.Close()
+		fl.file = nil
+		if err == windows.ERROR_LOCK_VIOLATION {
+			return filelock.ErrLockHeld
+		}
 		return err
 	}
 
-	if !wait {
-		return filelock.ErrLockHeld
-	}
-
-	retryInterval := time.Millisecond * 10 // Start with 10ms retry interval
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(retryInterval):
-		}
-
-		// Increase retry interval for exponential backoff, but cap it at 100ms
-		if retryInterval < time.Millisecond*100 {
-			retryInterval = time.Duration(float64(retryInterval) * 1.5)
-		}
-
-		// Try to acquire the lock again (non-blocking)
-		err = windows.LockFileEx(
-			handle,
-			windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
-			0,
-			1,
-			0,
-			overlapped,
-		)
-
-		// If we got the lock or there was an error other than lock violation, return
-		if err == nil || err != windows.ERROR_LOCK_VIOLATION {
-			return err
-		}
-	}
+	fl.locked = true
+	return nil
 }
 
 // Unlock releases the lock on the file

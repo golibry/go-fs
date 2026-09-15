@@ -64,6 +64,24 @@ func (fl *FileLock) LockContext(ctx context.Context) error {
 }
 
 func (fl *FileLock) lock(ctx context.Context, wait bool) error {
+	retryInterval := 10 * time.Millisecond
+	for {
+		err := fl.tryLock(ctx)
+		if err != filelock.ErrLockHeld || !wait {
+			return err
+		}
+
+		// Do not hold the state mutex while waiting between attempts.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryInterval):
+		}
+		retryInterval = min(retryInterval*3/2, 100*time.Millisecond)
+	}
+}
+
+func (fl *FileLock) tryLock(ctx context.Context) error {
 	fl.mutex.Lock()
 	defer fl.mutex.Unlock()
 
@@ -81,64 +99,18 @@ func (fl *FileLock) lock(ctx context.Context, wait bool) error {
 		return err
 	}
 
-	// Try to acquire the lock
-	err = fl.tryLock(ctx, wait)
+	err = syscall.Flock(int(fl.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err != nil {
 		_ = fl.file.Close()
 		fl.file = nil
+		if err == syscall.EWOULDBLOCK {
+			return filelock.ErrLockHeld
+		}
 		return err
 	}
 
 	fl.locked = true
 	return nil
-}
-
-func (fl *FileLock) tryLock(ctx context.Context, wait bool) error {
-	// Try non-blocking lock first using syscall.Flock
-	// LOCK_EX = exclusive lock, LOCK_NB = non-blocking
-	err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-
-	// If we got the lock immediately, return
-	if err == nil {
-		return nil
-	}
-
-	// EWOULDBLOCK means the lock is held by someone else
-	if err == syscall.EWOULDBLOCK {
-		if !wait {
-			return filelock.ErrLockHeld
-		}
-
-		retryInterval := time.Millisecond * 10 // Start with 10ms retry interval
-
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(retryInterval):
-			}
-
-			// Increase retry interval for exponential backoff, but cap it at 100ms
-			if retryInterval < time.Millisecond*100 {
-				retryInterval = time.Duration(float64(retryInterval) * 1.5)
-			}
-
-			// Try to acquire the lock again (non-blocking)
-			err = syscall.Flock(int(fl.file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-
-			// If we got the lock, return
-			if err == nil {
-				return nil
-			}
-
-			// If the error is not EWOULDBLOCK, return the error
-			if err != syscall.EWOULDBLOCK {
-				return err
-			}
-		}
-	}
-
-	return err
 }
 
 // Unlock releases the lock on the file
